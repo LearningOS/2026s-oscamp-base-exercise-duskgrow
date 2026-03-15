@@ -119,7 +119,40 @@ unsafe impl GlobalAlloc for FreeListAllocator {
         // TODO: Step 2 — no suitable block in free_list, allocate from bump region
         //
         // Same logic as 02_bump_allocator's alloc
-        todo!()
+
+        let free_list_head = self.free_list_head();
+        let mut prev_ptr: *mut FreeBlock = null_mut();
+        let mut curr = free_list_head;
+        while !curr.is_null() {
+            if curr as usize % align == 0 && (*curr).size >= size {
+                if prev_ptr.is_null() {
+                    self.set_free_list_head((*curr).next);
+                } else {
+                    (*prev_ptr).next = (*curr).next;
+                }
+                return curr as *mut u8;
+            }
+            prev_ptr = curr;
+            curr = (*curr).next;
+        }
+
+        let mut bump_next = self.bump_next.load(core::sync::atomic::Ordering::SeqCst);
+        loop {
+            let aligned_next = (bump_next + layout.align() - 1) & !(layout.align() - 1);
+            let allocation_end = aligned_next + layout.size();
+            if allocation_end > self.heap_end {
+                return null_mut();
+            }
+            match self.bump_next.compare_exchange(
+                bump_next,
+                allocation_end,
+                core::sync::atomic::Ordering::SeqCst,
+                core::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => return aligned_next as *mut u8,
+                Err(e) => bump_next = e,
+            }
+        }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -131,7 +164,10 @@ unsafe impl GlobalAlloc for FreeListAllocator {
         // 1. Cast ptr to *mut FreeBlock
         // 2. Write FreeBlock { size, next: current list head }
         // 3. Update free_list head to ptr
-        todo!()
+        let free_block: *mut FreeBlock = ptr as *mut FreeBlock;
+        (*free_block).size = size;
+        (*free_block).next = self.free_list_head();
+        self.set_free_list_head(free_block);
     }
 }
 
